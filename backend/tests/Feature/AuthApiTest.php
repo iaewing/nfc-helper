@@ -68,4 +68,28 @@ class AuthApiTest extends TestCase
             ->assertJsonPath('user.timezone', 'America/Chicago')
             ->assertJsonStructure(['token']);
     }
+
+    public function test_mixed_case_duplicate_email_registration_returns_422_and_mixed_case_login_succeeds(): void
+    {
+        $this->postJson('/api/v1/auth/register', [
+            'name' => 'Ian',
+            'email' => 'ian@example.com',
+            'password' => 'password123',
+            'device_name' => 'iPhone',
+        ])->assertCreated();
+
+        $this->postJson('/api/v1/auth/register', [
+            'name' => 'Ian Duplicate',
+            'email' => '  Ian@EXAMPLE.com ',
+            'password' => 'password123',
+            'device_name' => 'iPad',
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors(['email']);
+
+        $this->postJson('/api/v1/auth/login', [
+            'email' => '  IAN@Example.com ',
+            'password' => 'password123',
+            'device_name' => 'iPad',
+        ])->assertOk();
+    }
 }

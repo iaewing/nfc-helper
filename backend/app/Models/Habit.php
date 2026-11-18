@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use App\Enums\VerificationType;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -68,5 +69,53 @@ class Habit extends Model
     public function notificationSchedules(): HasMany
     {
         return $this->hasMany(NotificationSchedule::class);
+    }
+
+    protected static function booted(): void
+    {
+        static::deleting(function (Habit $habit): void {
+            $habit->stickers()->update(['habit_id' => null]);
+        });
+    }
+
+    public function previousScheduledDate(string $fromDate): string
+    {
+        $cursor = CarbonImmutable::parse($fromDate)->subDay();
+
+        if ($this->schedule_type === 'custom_days' && is_array($this->schedule_days) && $this->schedule_days !== []) {
+            $validDays = array_values(array_intersect(
+                array_map('intval', $this->schedule_days),
+                [1, 2, 3, 4, 5, 6, 7],
+            ));
+
+            if ($validDays !== []) {
+                for ($i = 0; $i < 7; $i++) {
+                    if (in_array($cursor->dayOfWeekIso, $validDays, true)) {
+                        return $cursor->toDateString();
+                    }
+                    $cursor = $cursor->subDay();
+                }
+            }
+        }
+
+        return $cursor->toDateString();
+    }
+
+    public function effectiveCurrentStreak(string $timezone = 'UTC'): int
+    {
+        if ($this->current_streak === 0 || $this->last_checked_in_date === null) {
+            return 0;
+        }
+
+        $today = CarbonImmutable::now($timezone)->toDateString();
+        $lastDate = $this->last_checked_in_date->toDateString();
+
+        if ($lastDate >= $today) {
+            return $this->current_streak;
+        }
+
+        return $lastDate >= $this->previousScheduledDate($today)
+            ? $this->current_streak
+            : 0;
     }
 }

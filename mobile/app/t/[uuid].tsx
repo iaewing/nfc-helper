@@ -1,4 +1,6 @@
+import NetInfo from '@react-native-community/netinfo';
 import * as Crypto from 'expo-crypto';
+import * as Linking from 'expo-linking';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import {
@@ -12,10 +14,15 @@ import { ApiError, apiRequest } from '../../src/api/client';
 import type {
   CheckInPayload,
   CheckInResponse,
+  HabitSummary,
   StickerResolveResponse,
 } from '../../src/api/types';
 import { useAuth } from '../../src/auth/AuthContext';
-import { enqueueCheckIn } from '../../src/offline/checkInQueue';
+import {
+  enqueueCheckIn,
+  findRecentQueuedTap,
+  flushCheckInQueue,
+} from '../../src/offline/checkInQueue';
 import {
   getCachedSticker,
   syncBootstrapCache,
@@ -67,7 +74,22 @@ export default function StickerTapScreen() {
   const { status } = useAuth();
 
   const [screen, setScreen] = useState<ScreenState>({ kind: 'loading' });
+  const [tapNonce, setTapNonce] = useState(0);
   const runIdRef = useRef(0);
+  const initialTappedAtRef = useRef<string>(new Date().toISOString());
+
+  useEffect(() => {
+    initialTappedAtRef.current = new Date().toISOString();
+  }, [uuid, tapNonce]);
+
+  useEffect(() => {
+    const subscription = Linking.addEventListener('url', ({ url }) => {
+      if (uuid && url.includes(`/t/${uuid}`)) {
+        setTapNonce((n) => n + 1);
+      }
+    });
+    return () => subscription.remove();
+  }, [uuid]);
 
   useEffect(() => {
     if (!uuid) {
@@ -93,7 +115,90 @@ export default function StickerTapScreen() {
 
     const currentRunId = ++runIdRef.current;
     const clientEventId = Crypto.randomUUID();
-    const tappedAt = new Date().toISOString();
+    const tappedAt = initialTappedAtRef.current;
+
+    async function handleOfflineFallback(
+      stickerUuid: string,
+      basePayload: CheckInPayload,
+      knownHabit: HabitSummary | null,
+      lastTappedAt: string | null,
+    ) {
+      if (!knownHabit) {
+        setScreen({
+          kind: 'error',
+          title: 'You Are Offline',
+          message:
+            'This sticker is not in your local cache yet. Reconnect and tap again to verify or claim it.',
+        });
+        return;
+      }
+
+      if (knownHabit.is_active === false) {
+        setScreen({
+          kind: 'error',
+          title: knownHabit.name,
+          message: 'This habit is currently paused.',
+        });
+        return;
+      }
+
+      if (knownHabit.cooldown_minutes > 0) {
+        const cooldownMs = knownHabit.cooldown_minutes * 60 * 1000;
+        const tappedMs = new Date(tappedAt).getTime();
+
+        if (lastTappedAt) {
+          const lastMs = new Date(lastTappedAt).getTime();
+          if (Number.isFinite(lastMs) && Math.abs(tappedMs - lastMs) < cooldownMs) {
+            setScreen({
+              kind: 'cooldown',
+              habitName: knownHabit.name,
+              nextAvailableAt: new Date(lastMs + cooldownMs).toISOString(),
+            });
+            return;
+          }
+        }
+
+        const recentQueued = await findRecentQueuedTap(
+          stickerUuid,
+          knownHabit.cooldown_minutes,
+          tappedAt,
+        );
+        if (runIdRef.current !== currentRunId) return;
+
+        if (recentQueued) {
+          setScreen({
+            kind: 'cooldown',
+            habitName: knownHabit.name,
+            nextAvailableAt: recentQueued.nextAvailableAt,
+          });
+          return;
+        }
+      }
+
+      if (knownHabit.require_hardware_uid) {
+        setScreen({
+          kind: 'needs_hardware_uid',
+          habitName: knownHabit.name,
+        });
+        return;
+      }
+
+      if (knownHabit.verification_type !== 'tap') {
+        setScreen({
+          kind: 'needs_photo',
+          habitName: knownHabit.name,
+        });
+        return;
+      }
+
+      await enqueueCheckIn(basePayload);
+      if (runIdRef.current !== currentRunId) return;
+
+      setScreen({
+        kind: 'queued_offline',
+        habitName: knownHabit.name,
+      });
+    }
 
     async function processTap(stickerUuid: string) {
       setScreen({ kind: 'loading' });
@@ -105,9 +210,29 @@ export default function StickerTapScreen() {
         tapped_at: tappedAt,
       };
 
+      const cachedSticker = await getCachedSticker(stickerUuid);
+      const netState = await NetInfo.fetch().catch(() => null);
+      if (runIdRef.current !== currentRunId) return;
+
+      if (netState && netState.isConnected === false) {
+        await handleOfflineFallback(
+          stickerUuid,
+          basePayload,
+          cachedSticker?.habit ?? null,
+          cachedSticker?.last_tapped_at ?? null,
+        );
+        return;
+      }
+
+      let resolvedHabit: HabitSummary | null = cachedSticker?.habit ?? null;
+
       try {
+        // Flush any earlier offline taps first so out-of-order conflicts don't occur
+        await flushCheckInQueue().catch(() => {});
+
         const resolved = await apiRequest<StickerResolveResponse>(
           `/stickers/${encodeURIComponent(stickerUuid)}/resolve`,
+          { timeoutMs: cachedSticker ? 4000 : 8000 },
         );
 
         if (runIdRef.current !== currentRunId) return;
@@ -130,6 +255,8 @@ export default function StickerTapScreen() {
           });
           return;
         }
+
+        resolvedHabit = resolved.habit;
 
         if (!resolved.eligibility.can_check_in) {
           if (resolved.eligibility.reason === 'COOLDOWN_ACTIVE') {
@@ -187,49 +314,22 @@ export default function StickerTapScreen() {
         if (runIdRef.current !== currentRunId) return;
 
         if (error instanceof ApiError && error.isNetworkError) {
-          const cached = await getCachedSticker(stickerUuid);
+          const latestCached = cachedSticker ?? (await getCachedSticker(stickerUuid));
           if (runIdRef.current !== currentRunId) return;
 
-          if (!cached || !cached.habit) {
-            setScreen({
-              kind: 'error',
-              title: 'You Are Offline',
-              message:
-                'This sticker is not in your local cache yet. Reconnect and tap again to verify or claim it.',
-            });
-            return;
-          }
-
-          if (cached.habit.require_hardware_uid) {
-            setScreen({
-              kind: 'needs_hardware_uid',
-              habitName: cached.habit.name,
-            });
-            return;
-          }
-
-          if (cached.habit.verification_type !== 'tap') {
-            setScreen({
-              kind: 'needs_photo',
-              habitName: cached.habit.name,
-            });
-            return;
-          }
-
-          await enqueueCheckIn(basePayload);
-          if (runIdRef.current !== currentRunId) return;
-
-          setScreen({
-            kind: 'queued_offline',
-            habitName: cached.habit.name,
-          });
+          await handleOfflineFallback(
+            stickerUuid,
+            basePayload,
+            resolvedHabit ?? latestCached?.habit ?? null,
+            latestCached?.last_tapped_at ?? null,
+          );
           return;
         }
 
         if (error instanceof ApiError && error.code === 'COOLDOWN_ACTIVE') {
           setScreen({
             kind: 'cooldown',
-            habitName: 'Habit Check-In',
+            habitName: resolvedHabit?.name ?? 'Habit Check-In',
             nextAvailableAt:
               typeof error.meta?.next_available_at === 'string'
                 ? error.meta.next_available_at
@@ -250,7 +350,7 @@ export default function StickerTapScreen() {
     }
 
     processTap(uuid);
-  }, [uuid, status, router]);
+  }, [uuid, status, router, tapNonce]);
 
   return (
     <View style={styles.container}>
@@ -348,14 +448,22 @@ export default function StickerTapScreen() {
           </>
         ) : null}
 
-        {screen.kind !== 'loading' ? (
-          <Pressable
-            style={styles.button}
-            onPress={() => router.replace('/(tabs)')}
+        <Pressable
+          style={[
+            styles.button,
+            screen.kind === 'loading' && styles.secondaryButton,
+          ]}
+          onPress={() => router.replace('/(tabs)')}
+        >
+          <Text
+            style={[
+              styles.buttonText,
+              screen.kind === 'loading' && styles.secondaryButtonText,
+            ]}
           >
-            <Text style={styles.buttonText}>Back to Habits</Text>
-          </Pressable>
-        ) : null}
+            {screen.kind === 'loading' ? 'Cancel' : 'Back to Habits'}
+          </Text>
+        </Pressable>
       </View>
     </View>
   );
@@ -433,9 +541,15 @@ const styles = StyleSheet.create({
     width: '100%',
     alignItems: 'center',
   },
+  secondaryButton: {
+    backgroundColor: '#334155',
+  },
   buttonText: {
     color: '#082F49',
     fontSize: 16,
     fontWeight: '700',
+  },
+  secondaryButtonText: {
+    color: '#E2E8F0',
   },
 });

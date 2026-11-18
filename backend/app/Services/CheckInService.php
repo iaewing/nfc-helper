@@ -11,8 +11,11 @@ use App\Models\Habit;
 use App\Models\Sticker;
 use App\Models\User;
 use Carbon\CarbonImmutable;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
+use Throwable;
 
 class CheckInService
 {
@@ -47,8 +50,8 @@ class CheckInService
 
         if ($habit->window_start !== null && $habit->window_end !== null) {
             $currentClock = $localTime->format('H:i:s');
-            $start = strlen($habit->window_start) === 5 ? $habit->window_start.':00' : $habit->window_start;
-            $end = strlen($habit->window_end) === 5 ? $habit->window_end.':00' : $habit->window_end;
+            $start = CarbonImmutable::parse($habit->window_start)->format('H:i:s');
+            $end = CarbonImmutable::parse($habit->window_end)->format('H:i:s');
 
             $inWindow = $start <= $end
                 ? ($currentClock >= $start && $currentClock <= $end)
@@ -64,23 +67,26 @@ class CheckInService
         }
 
         if ($habit->cooldown_minutes > 0) {
-            $latestCheckIn = CheckIn::query()
+            $windowStart = $at->subMinutes($habit->cooldown_minutes);
+            $windowEnd = $at->addMinutes($habit->cooldown_minutes);
+
+            $conflictingCheckIn = CheckIn::query()
                 ->where('habit_id', $habit->id)
                 ->where('status', CheckInStatus::Verified)
+                ->where('tapped_at', '>', $windowStart)
+                ->where('tapped_at', '<', $windowEnd)
                 ->latest('tapped_at')
                 ->first();
 
-            if ($latestCheckIn !== null) {
-                $cooldownEndsAt = CarbonImmutable::instance($latestCheckIn->tapped_at)
+            if ($conflictingCheckIn !== null) {
+                $cooldownEndsAt = CarbonImmutable::instance($conflictingCheckIn->tapped_at)
                     ->addMinutes($habit->cooldown_minutes);
 
-                if ($at->lt($cooldownEndsAt)) {
-                    return [
-                        'can_check_in' => false,
-                        'reason' => 'COOLDOWN_ACTIVE',
-                        'next_available_at' => $cooldownEndsAt->toIso8601String(),
-                    ];
-                }
+                return [
+                    'can_check_in' => false,
+                    'reason' => 'COOLDOWN_ACTIVE',
+                    'next_available_at' => $cooldownEndsAt->toIso8601String(),
+                ];
             }
         }
 
@@ -97,29 +103,11 @@ class CheckInService
      */
     public function record(User $user, array $data, ?UploadedFile $photo = null): array
     {
-        $existing = CheckIn::query()
-            ->with('habit')
-            ->where('client_event_id', $data['client_event_id'])
-            ->first();
-
-        if ($existing !== null) {
-            if ($existing->user_id !== $user->id) {
-                throw new CheckInRejectedException(
-                    'CLIENT_EVENT_CONFLICT',
-                    'This check-in event ID is already claimed.',
-                    409,
-                );
-            }
-
-            return [
-                'idempotent_replay' => true,
-                'check_in' => $existing,
-                'habit' => $existing->habit,
-            ];
+        if ($existing = $this->findExistingEvent($user, (string) $data['client_event_id'])) {
+            return $existing;
         }
 
         $sticker = Sticker::query()
-            ->with('habit')
             ->where('uuid', $data['sticker_uuid'])
             ->first();
 
@@ -135,9 +123,7 @@ class CheckInService
             throw new CheckInRejectedException('STICKER_NOT_OWNED', 'You do not own this sticker.', 403);
         }
 
-        $habit = $sticker->habit;
-
-        if ($habit === null) {
+        if ($sticker->habit_id === null) {
             throw new CheckInRejectedException('STICKER_UNASSIGNED', 'Assign a habit to this sticker before checking in.', 422);
         }
 
@@ -163,132 +149,272 @@ class CheckInService
             );
         }
 
-        $hardwareUidVerified = false;
         $providedUid = isset($data['hardware_uid']) && $data['hardware_uid'] !== ''
             ? Sticker::normalizeHardwareUid((string) $data['hardware_uid'])
             : null;
 
-        if ($habit->require_hardware_uid && $providedUid === null) {
-            throw new CheckInRejectedException(
-                'HARDWARE_UID_REQUIRED',
-                'This habit requires a foreground NFC scan to verify the physical sticker.',
-                422,
-            );
-        }
+        try {
+            /** @var array{idempotent_replay: bool, check_in: CheckIn, habit: Habit} */
+            return DB::transaction(function () use (
+                $data,
+                $user,
+                $sticker,
+                $providedUid,
+                $photo,
+                $tappedAt,
+                $receivedAt,
+            ) {
+                $lockedHabit = Habit::query()->lockForUpdate()->find($sticker->habit_id);
 
-        if ($providedUid !== null) {
-            if ($sticker->hardware_uid !== null && ! hash_equals($sticker->hardware_uid, $providedUid)) {
-                throw new CheckInRejectedException(
-                    'HARDWARE_UID_MISMATCH',
-                    'Scanned hardware UID does not match this registered sticker.',
-                    403,
-                );
+                if ($lockedHabit === null) {
+                    throw new CheckInRejectedException('STICKER_UNASSIGNED', 'Assign a habit to this sticker before checking in.', 422);
+                }
+
+                if ($existing = $this->findExistingEvent($user, (string) $data['client_event_id'])) {
+                    return $existing;
+                }
+
+                $hardwareUidVerified = false;
+
+                if ($lockedHabit->require_hardware_uid) {
+                    if ($sticker->hardware_uid === null || $sticker->hardware_uid === '') {
+                        throw new CheckInRejectedException(
+                            'HARDWARE_UID_NOT_REGISTERED',
+                            'This sticker does not have a registered hardware UID.',
+                            422,
+                        );
+                    }
+
+                    if ($providedUid === null) {
+                        throw new CheckInRejectedException(
+                            'HARDWARE_UID_REQUIRED',
+                            'This habit requires a foreground NFC scan to verify the physical sticker.',
+                            422,
+                        );
+                    }
+                }
+
+                if ($providedUid !== null && $sticker->hardware_uid !== null && $sticker->hardware_uid !== '') {
+                    if (! hash_equals($sticker->hardware_uid, $providedUid)) {
+                        throw new CheckInRejectedException(
+                            'HARDWARE_UID_MISMATCH',
+                            'Scanned hardware UID does not match this registered sticker.',
+                            403,
+                        );
+                    }
+                    $hardwareUidVerified = true;
+                }
+
+                if ($lockedHabit->verification_type->requiresPhoto() && $photo === null) {
+                    throw new CheckInRejectedException(
+                        'PHOTO_REQUIRED',
+                        'A live photo proof is required to complete this habit.',
+                        422,
+                    );
+                }
+
+                $latitude = isset($data['latitude']) ? (float) $data['latitude'] : null;
+                $longitude = isset($data['longitude']) ? (float) $data['longitude'] : null;
+                $distanceMeters = null;
+
+                if ($lockedHabit->verification_type->requiresLocation() && ($latitude === null || $longitude === null)) {
+                    throw new CheckInRejectedException(
+                        'LOCATION_REQUIRED',
+                        'Location coordinates are required to complete this habit.',
+                        422,
+                    );
+                }
+
+                if (
+                    $latitude !== null &&
+                    $longitude !== null &&
+                    $lockedHabit->geofence_lat !== null &&
+                    $lockedHabit->geofence_lng !== null
+                ) {
+                    $distanceMeters = $this->calculateDistanceMeters(
+                        $latitude,
+                        $longitude,
+                        $lockedHabit->geofence_lat,
+                        $lockedHabit->geofence_lng,
+                    );
+
+                    if (
+                        $lockedHabit->verification_type->requiresLocation() &&
+                        $lockedHabit->geofence_radius_m !== null &&
+                        $distanceMeters > $lockedHabit->geofence_radius_m
+                    ) {
+                        throw new CheckInRejectedException(
+                            'OUTSIDE_GEOFENCE',
+                            'You are outside the allowed location radius for this habit.',
+                            422,
+                            [
+                                'distance_meters' => $distanceMeters,
+                                'allowed_radius_meters' => $lockedHabit->geofence_radius_m,
+                            ],
+                        );
+                    }
+                }
+
+                $timezone = $user->timezone ?: 'UTC';
+                $eligibility = $this->evaluateEligibility($sticker, $lockedHabit, $tappedAt, $timezone);
+
+                if (! $eligibility['can_check_in']) {
+                    $reason = $eligibility['reason'] ?? 'CHECK_IN_NOT_ALLOWED';
+                    $statusCode = $reason === 'COOLDOWN_ACTIVE' ? 409 : 422;
+                    $message = match ($reason) {
+                        'COOLDOWN_ACTIVE' => 'Cooldown is active for this habit. Try again later.',
+                        'OUTSIDE_SCHEDULE_WINDOW' => 'This tap is outside the habit schedule window.',
+                        'HABIT_INACTIVE' => 'This habit is currently paused.',
+                        default => 'Check-in is not allowed right now.',
+                    };
+
+                    throw new CheckInRejectedException($reason, $message, $statusCode, [
+                        'next_available_at' => $eligibility['next_available_at'],
+                    ]);
+                }
+
+                $localDate = $tappedAt->setTimezone($timezone)->toDateString();
+                $isOfflineSync = $receivedAt->diffInSeconds($tappedAt, true) > 120;
+                $photoPath = $photo?->store("check-ins/{$user->id}", 'local');
+
+                try {
+                    $checkIn = CheckIn::create([
+                        'client_event_id' => $data['client_event_id'],
+                        'user_id' => $user->id,
+                        'habit_id' => $lockedHabit->id,
+                        'sticker_id' => $sticker->id,
+                        'source' => CheckInSource::from($data['source']),
+                        'hardware_uid_verified' => $hardwareUidVerified,
+                        'tapped_at' => $tappedAt,
+                        'received_at' => $receivedAt,
+                        'local_date' => $localDate,
+                        'is_offline_sync' => $isOfflineSync,
+                        'photo_path' => $photoPath,
+                        'latitude' => $latitude,
+                        'longitude' => $longitude,
+                        'distance_meters' => $distanceMeters,
+                        'status' => CheckInStatus::Verified,
+                    ]);
+
+                    if ($sticker->last_tapped_at === null || $tappedAt->greaterThan($sticker->last_tapped_at)) {
+                        $sticker->forceFill(['last_tapped_at' => $tappedAt])->save();
+                    }
+
+                    $this->recalculateStreak($lockedHabit);
+
+                    return [
+                        'idempotent_replay' => false,
+                        'check_in' => $checkIn,
+                        'habit' => $lockedHabit->fresh(),
+                    ];
+                } catch (Throwable $e) {
+                    if ($photoPath !== null) {
+                        Storage::disk('local')->delete($photoPath);
+                    }
+                    throw $e;
+                }
+            });
+        } catch (UniqueConstraintViolationException) {
+            if ($existing = $this->findExistingEvent($user, (string) $data['client_event_id'])) {
+                return $existing;
             }
-            $hardwareUidVerified = $sticker->hardware_uid !== null;
-        }
 
-        if ($habit->verification_type->requiresPhoto() && $photo === null) {
             throw new CheckInRejectedException(
-                'PHOTO_REQUIRED',
-                'A live photo proof is required to complete this habit.',
-                422,
+                'CLIENT_EVENT_CONFLICT',
+                'This check-in event ID is already claimed.',
+                409,
             );
         }
-
-        $timezone = $user->timezone ?: 'UTC';
-        $eligibility = $this->evaluateEligibility($sticker, $habit, $tappedAt, $timezone);
-
-        if (! $eligibility['can_check_in']) {
-            $reason = $eligibility['reason'] ?? 'CHECK_IN_NOT_ALLOWED';
-            $statusCode = $reason === 'COOLDOWN_ACTIVE' ? 409 : 422;
-            $message = match ($reason) {
-                'COOLDOWN_ACTIVE' => 'Cooldown is active for this habit. Try again later.',
-                'OUTSIDE_SCHEDULE_WINDOW' => 'This tap is outside the habit schedule window.',
-                'HABIT_INACTIVE' => 'This habit is currently paused.',
-                default => 'Check-in is not allowed right now.',
-            };
-
-            throw new CheckInRejectedException($reason, $message, $statusCode, [
-                'next_available_at' => $eligibility['next_available_at'],
-            ]);
-        }
-
-        $photoPath = $photo?->store("check-ins/{$user->id}", 'local');
-        $localDate = $tappedAt->setTimezone($timezone)->toDateString();
-        $isOfflineSync = $receivedAt->diffInSeconds($tappedAt, true) > 120;
-
-        /** @var array{idempotent_replay: bool, check_in: CheckIn, habit: Habit} */
-        return DB::transaction(function () use (
-            $data,
-            $user,
-            $habit,
-            $sticker,
-            $hardwareUidVerified,
-            $tappedAt,
-            $receivedAt,
-            $localDate,
-            $isOfflineSync,
-            $photoPath,
-        ) {
-            $lockedHabit = Habit::query()->lockForUpdate()->findOrFail($habit->id);
-
-            $checkIn = CheckIn::create([
-                'client_event_id' => $data['client_event_id'],
-                'user_id' => $user->id,
-                'habit_id' => $lockedHabit->id,
-                'sticker_id' => $sticker->id,
-                'source' => CheckInSource::from($data['source']),
-                'hardware_uid_verified' => $hardwareUidVerified,
-                'tapped_at' => $tappedAt,
-                'received_at' => $receivedAt,
-                'local_date' => $localDate,
-                'is_offline_sync' => $isOfflineSync,
-                'photo_path' => $photoPath,
-                'latitude' => $data['latitude'] ?? null,
-                'longitude' => $data['longitude'] ?? null,
-                'status' => CheckInStatus::Verified,
-            ]);
-
-            $sticker->forceFill(['last_tapped_at' => $tappedAt])->save();
-
-            $this->updateStreak($lockedHabit, $localDate);
-
-            return [
-                'idempotent_replay' => false,
-                'check_in' => $checkIn,
-                'habit' => $lockedHabit->fresh(),
-            ];
-        });
     }
 
-    private function updateStreak(Habit $habit, string $localDate): void
+    /**
+     * @return ?array{idempotent_replay: bool, check_in: CheckIn, habit: Habit}
+     */
+    private function findExistingEvent(User $user, string $clientEventId): ?array
     {
-        $lastDate = $habit->last_checked_in_date?->toDateString();
+        $existing = CheckIn::query()
+            ->with('habit')
+            ->where('client_event_id', $clientEventId)
+            ->first();
 
-        if ($lastDate === $localDate) {
+        if ($existing === null) {
+            return null;
+        }
+
+        if ($existing->user_id !== $user->id) {
+            throw new CheckInRejectedException(
+                'CLIENT_EVENT_CONFLICT',
+                'This check-in event ID is already claimed.',
+                409,
+            );
+        }
+
+        return [
+            'idempotent_replay' => true,
+            'check_in' => $existing,
+            'habit' => $existing->habit,
+        ];
+    }
+
+    private function recalculateStreak(Habit $habit): void
+    {
+        $dates = CheckIn::query()
+            ->where('habit_id', $habit->id)
+            ->where('status', CheckInStatus::Verified)
+            ->orderBy('local_date')
+            ->get(['local_date'])
+            ->map(fn (CheckIn $c) => $c->local_date->toDateString())
+            ->unique()
+            ->values();
+
+        if ($dates->isEmpty()) {
             return;
         }
 
-        if ($lastDate !== null) {
-            $previousDay = CarbonImmutable::parse($localDate)->subDay()->toDateString();
+        $currentRun = 0;
+        $longestRun = $habit->longest_streak;
+        $prevDate = null;
 
-            if ($lastDate === $previousDay) {
-                $habit->current_streak += 1;
-            } elseif ($localDate > $lastDate) {
-                $habit->current_streak = 1;
+        foreach ($dates as $date) {
+            if ($prevDate === null) {
+                $currentRun = 1;
+            } else {
+                $expectedPrev = $habit->previousScheduledDate($date);
+                if ($prevDate >= $expectedPrev && $prevDate < $date) {
+                    $currentRun += 1;
+                } else {
+                    $currentRun = 1;
+                }
             }
-        } else {
-            $habit->current_streak = 1;
+
+            if ($currentRun > $longestRun) {
+                $longestRun = $currentRun;
+            }
+
+            $prevDate = $date;
         }
 
-        if ($habit->current_streak > $habit->longest_streak) {
-            $habit->longest_streak = $habit->current_streak;
-        }
-
-        if ($lastDate === null || $localDate > $lastDate) {
-            $habit->last_checked_in_date = $localDate;
-        }
-
+        $habit->current_streak = $currentRun;
+        $habit->longest_streak = $longestRun;
+        $habit->last_checked_in_date = $dates->last();
         $habit->save();
+    }
+
+    private function calculateDistanceMeters(
+        float $lat1,
+        float $lon1,
+        float $lat2,
+        float $lon2,
+    ): int {
+        $earthRadiusMeters = 6371000.0;
+        $dLat = deg2rad($lat2 - $lat1);
+        $dLon = deg2rad($lon2 - $lon1);
+
+        $a = sin($dLat / 2) ** 2
+            + cos(deg2rad($lat1)) * cos(deg2rad($lat2)) * sin($dLon / 2) ** 2;
+
+        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+
+        return (int) round($earthRadiusMeters * $c);
     }
 }
