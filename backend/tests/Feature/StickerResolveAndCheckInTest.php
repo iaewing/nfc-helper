@@ -289,16 +289,29 @@ class StickerResolveAndCheckInTest extends TestCase
         ])->assertUnprocessable()
             ->assertJsonPath('code', 'OUTSIDE_SCHEDULE_WINDOW');
 
-        // Wednesday (3) at 01:30 is inside the overnight 22:00..02:00 window and increments streak to 2!
-        $wednesdayEarly = CarbonImmutable::parse('2026-11-18T01:30:00Z');
-        $this->travelTo($wednesdayEarly);
+        // Wednesday (3) at 01:30 belongs to Tuesday night's 22:00..02:00 overnight shift (logical Tuesday = 2), so rejected!
+        $tuesdayShiftPostMidnight = CarbonImmutable::parse('2026-11-18T01:30:00Z');
+        $this->travelTo($tuesdayShiftPostMidnight);
 
         $this->postJson('/api/v1/check-ins', [
             'client_event_id' => (string) Str::uuid(),
             'sticker_uuid' => $sticker->uuid,
             'source' => CheckInSource::UniversalLink->value,
-            'tapped_at' => $wednesdayEarly->toIso8601String(),
+            'tapped_at' => $tuesdayShiftPostMidnight->toIso8601String(),
+        ])->assertUnprocessable()
+            ->assertJsonPath('code', 'OUTSIDE_SCHEDULE_WINDOW');
+
+        // Thursday (4) at 01:30 belongs to Wednesday night's 22:00..02:00 overnight shift (logical Wednesday = 3, local_date = 2026-11-18) and increments streak to 2!
+        $wednesdayShiftPostMidnight = CarbonImmutable::parse('2026-11-19T01:30:00Z');
+        $this->travelTo($wednesdayShiftPostMidnight);
+
+        $this->postJson('/api/v1/check-ins', [
+            'client_event_id' => (string) Str::uuid(),
+            'sticker_uuid' => $sticker->uuid,
+            'source' => CheckInSource::UniversalLink->value,
+            'tapped_at' => $wednesdayShiftPostMidnight->toIso8601String(),
         ])->assertCreated()
+            ->assertJsonPath('check_in.local_date', '2026-11-18')
             ->assertJsonPath('habit.current_streak', 2);
     }
 

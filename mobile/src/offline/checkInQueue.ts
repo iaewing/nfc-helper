@@ -9,6 +9,7 @@ import { syncBootstrapCache } from './stickerCache';
 const QUEUE_KEY = 'pending_check_in_queue_v1';
 
 export interface PendingCheckIn extends CheckInPayload {
+  habit_id?: number | null;
   local_photo_uri?: string | null;
   enqueued_at: string;
   attempts: number;
@@ -49,6 +50,7 @@ async function saveQueue(items: PendingCheckIn[]): Promise<void> {
 export async function enqueueCheckIn(
   payload: CheckInPayload,
   localPhotoUri?: string | null,
+  habitId?: number | null,
 ): Promise<PendingCheckIn[]> {
   const current = await getPendingCheckIns();
   const alreadyQueued = current.some(
@@ -62,6 +64,7 @@ export async function enqueueCheckIn(
     ...current,
     {
       ...payload,
+      habit_id: habitId ?? null,
       local_photo_uri: localPhotoUri ?? null,
       enqueued_at: new Date().toISOString(),
       attempts: 0,
@@ -75,6 +78,7 @@ export async function findRecentQueuedTap(
   stickerUuid: string,
   cooldownMinutes: number,
   atIso: string,
+  habitId?: number | null,
 ): Promise<{ nextAvailableAt: string } | null> {
   if (cooldownMinutes <= 0) return null;
 
@@ -83,7 +87,16 @@ export async function findRecentQueuedTap(
   const cooldownMs = cooldownMinutes * 60 * 1000;
 
   for (const item of queue) {
-    if (item.sticker_uuid !== stickerUuid) continue;
+    const matchesSticker = item.sticker_uuid === stickerUuid;
+    const matchesHabit =
+      habitId !== null &&
+      habitId !== undefined &&
+      item.habit_id !== null &&
+      item.habit_id !== undefined &&
+      item.habit_id === habitId;
+
+    if (!matchesSticker && !matchesHabit) continue;
+
     const itemMs = new Date(item.tapped_at).getTime();
     if (Number.isFinite(itemMs) && Math.abs(atMs - itemMs) < cooldownMs) {
       return {
@@ -189,6 +202,11 @@ export async function flushCheckInQueue(): Promise<FlushResult> {
           ...item,
           attempts: item.attempts + 1,
         });
+
+        if (error instanceof ApiError && error.isNetworkError) {
+          // Stop iterating remaining items on network timeout/drop to avoid N × 8s delays
+          break;
+        }
       }
     }
 

@@ -25,6 +25,7 @@ import {
 } from '../../src/offline/checkInQueue';
 import {
   getCachedSticker,
+  markStickerTappedLocally,
   syncBootstrapCache,
 } from '../../src/offline/stickerCache';
 
@@ -162,6 +163,7 @@ export default function StickerTapScreen() {
           stickerUuid,
           knownHabit.cooldown_minutes,
           tappedAt,
+          knownHabit.id,
         );
         if (runIdRef.current !== currentRunId) return;
 
@@ -191,7 +193,7 @@ export default function StickerTapScreen() {
         return;
       }
 
-      await enqueueCheckIn(basePayload);
+      await enqueueCheckIn(basePayload, null, knownHabit.id);
       if (runIdRef.current !== currentRunId) return;
 
       setScreen({
@@ -302,6 +304,11 @@ export default function StickerTapScreen() {
 
         if (runIdRef.current !== currentRunId) return;
 
+        await markStickerTappedLocally(
+          stickerUuid,
+          checkIn.check_in.tapped_at,
+          checkIn.habit.current_streak,
+        ).catch(() => {});
         syncBootstrapCache().catch(() => {});
 
         setScreen({

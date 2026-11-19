@@ -4,7 +4,7 @@
 We are building a physical-digital habit and accountability system inspired by Shelpful's "PROVE IT" stickers. Users purchase or register physical NFC stickers (NTAG213/215) placed in real-world environments (e.g., coffee maker, gym bag, front door, desk) and bind them to recurring habits or tasks. Tapping an unlocked phone to a sticker proves physical presence and triggers task verification, streak tracking, and accountability workflows.
 
 ## 2. Tech Stack & Architecture
-* **Backend:** Laravel 12 (PHP 8.4+), PostgreSQL/MySQL, Redis queues, Laravel Sanctum (API token auth).
+* **Backend:** Laravel 12+ / 13 (PHP 8.4+), PostgreSQL/MySQL, Redis queues, Laravel Sanctum (API token auth).
 * **Mobile App:** React Native with Expo (TypeScript), `expo-router` (file-based routing & Universal Links), Expo Development Builds (`expo-dev-client` — do NOT rely on Expo Go due to native NFC requirements).
 * **Key Native Modules:**
   * `react-native-nfc-manager` (configured with `"includeNdefEntitlement": false` in `app.json` to avoid App Store `ITMS-90778` rejections while preserving NDEF read/write via standard `TAG` entitlement).

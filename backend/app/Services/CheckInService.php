@@ -38,16 +38,6 @@ class CheckInService
 
         $localTime = $at->setTimezone($timezone);
 
-        if ($habit->schedule_type === 'custom_days' && is_array($habit->schedule_days) && $habit->schedule_days !== []) {
-            if (! in_array($localTime->dayOfWeekIso, array_map('intval', $habit->schedule_days), true)) {
-                return [
-                    'can_check_in' => false,
-                    'reason' => 'OUTSIDE_SCHEDULE_WINDOW',
-                    'next_available_at' => null,
-                ];
-            }
-        }
-
         if ($habit->window_start !== null && $habit->window_end !== null) {
             $currentClock = $localTime->format('H:i:s');
             $start = CarbonImmutable::parse($habit->window_start)->format('H:i:s');
@@ -58,6 +48,18 @@ class CheckInService
                 : ($currentClock >= $start || $currentClock <= $end);
 
             if (! $inWindow) {
+                return [
+                    'can_check_in' => false,
+                    'reason' => 'OUTSIDE_SCHEDULE_WINDOW',
+                    'next_available_at' => null,
+                ];
+            }
+        }
+
+        $logicalLocalTime = $this->resolveLogicalLocalTime($habit, $at, $timezone);
+
+        if ($habit->schedule_type === 'custom_days' && is_array($habit->schedule_days) && $habit->schedule_days !== []) {
+            if (! in_array($logicalLocalTime->dayOfWeekIso, array_map('intval', $habit->schedule_days), true)) {
                 return [
                     'can_check_in' => false,
                     'reason' => 'OUTSIDE_SCHEDULE_WINDOW',
@@ -164,7 +166,25 @@ class CheckInService
                 $tappedAt,
                 $receivedAt,
             ) {
-                $lockedHabit = Habit::query()->lockForUpdate()->find($sticker->habit_id);
+                $lockedSticker = Sticker::query()->lockForUpdate()->find($sticker->id);
+
+                if ($lockedSticker === null) {
+                    throw new CheckInRejectedException('STICKER_NOT_FOUND', 'Sticker not found.', 404);
+                }
+
+                if ($lockedSticker->status === StickerStatus::Disabled) {
+                    throw new CheckInRejectedException('STICKER_DISABLED', 'This sticker has been disabled.', 410);
+                }
+
+                if ($lockedSticker->user_id !== $user->id || $lockedSticker->status !== StickerStatus::Claimed) {
+                    throw new CheckInRejectedException('STICKER_NOT_OWNED', 'You do not own this sticker.', 403);
+                }
+
+                if ($lockedSticker->habit_id === null) {
+                    throw new CheckInRejectedException('STICKER_UNASSIGNED', 'Assign a habit to this sticker before checking in.', 422);
+                }
+
+                $lockedHabit = Habit::query()->lockForUpdate()->find($lockedSticker->habit_id);
 
                 if ($lockedHabit === null) {
                     throw new CheckInRejectedException('STICKER_UNASSIGNED', 'Assign a habit to this sticker before checking in.', 422);
@@ -177,7 +197,7 @@ class CheckInService
                 $hardwareUidVerified = false;
 
                 if ($lockedHabit->require_hardware_uid) {
-                    if ($sticker->hardware_uid === null || $sticker->hardware_uid === '') {
+                    if ($lockedSticker->hardware_uid === null || $lockedSticker->hardware_uid === '') {
                         throw new CheckInRejectedException(
                             'HARDWARE_UID_NOT_REGISTERED',
                             'This sticker does not have a registered hardware UID.',
@@ -194,8 +214,8 @@ class CheckInService
                     }
                 }
 
-                if ($providedUid !== null && $sticker->hardware_uid !== null && $sticker->hardware_uid !== '') {
-                    if (! hash_equals($sticker->hardware_uid, $providedUid)) {
+                if ($providedUid !== null && $lockedSticker->hardware_uid !== null && $lockedSticker->hardware_uid !== '') {
+                    if (! hash_equals($lockedSticker->hardware_uid, $providedUid)) {
                         throw new CheckInRejectedException(
                             'HARDWARE_UID_MISMATCH',
                             'Scanned hardware UID does not match this registered sticker.',
@@ -256,7 +276,7 @@ class CheckInService
                 }
 
                 $timezone = $user->timezone ?: 'UTC';
-                $eligibility = $this->evaluateEligibility($sticker, $lockedHabit, $tappedAt, $timezone);
+                $eligibility = $this->evaluateEligibility($lockedSticker, $lockedHabit, $tappedAt, $timezone);
 
                 if (! $eligibility['can_check_in']) {
                     $reason = $eligibility['reason'] ?? 'CHECK_IN_NOT_ALLOWED';
@@ -273,7 +293,7 @@ class CheckInService
                     ]);
                 }
 
-                $localDate = $tappedAt->setTimezone($timezone)->toDateString();
+                $localDate = $this->resolveLogicalLocalTime($lockedHabit, $tappedAt, $timezone)->toDateString();
                 $isOfflineSync = $receivedAt->diffInSeconds($tappedAt, true) > 120;
                 $photoPath = $photo?->store("check-ins/{$user->id}", 'local');
 
@@ -282,7 +302,7 @@ class CheckInService
                         'client_event_id' => $data['client_event_id'],
                         'user_id' => $user->id,
                         'habit_id' => $lockedHabit->id,
-                        'sticker_id' => $sticker->id,
+                        'sticker_id' => $lockedSticker->id,
                         'source' => CheckInSource::from($data['source']),
                         'hardware_uid_verified' => $hardwareUidVerified,
                         'tapped_at' => $tappedAt,
@@ -296,8 +316,8 @@ class CheckInService
                         'status' => CheckInStatus::Verified,
                     ]);
 
-                    if ($sticker->last_tapped_at === null || $tappedAt->greaterThan($sticker->last_tapped_at)) {
-                        $sticker->forceFill(['last_tapped_at' => $tappedAt])->save();
+                    if ($lockedSticker->last_tapped_at === null || $tappedAt->greaterThan($lockedSticker->last_tapped_at)) {
+                        $lockedSticker->forceFill(['last_tapped_at' => $tappedAt])->save();
                     }
 
                     $this->recalculateStreak($lockedHabit);
@@ -398,6 +418,25 @@ class CheckInService
         $habit->longest_streak = $longestRun;
         $habit->last_checked_in_date = $dates->last();
         $habit->save();
+    }
+
+    private function resolveLogicalLocalTime(
+        Habit $habit,
+        CarbonImmutable $at,
+        string $timezone,
+    ): CarbonImmutable {
+        $localTime = $at->setTimezone($timezone);
+
+        if ($habit->window_start !== null && $habit->window_end !== null) {
+            $start = CarbonImmutable::parse($habit->window_start)->format('H:i:s');
+            $end = CarbonImmutable::parse($habit->window_end)->format('H:i:s');
+
+            if ($start > $end && $localTime->format('H:i:s') <= $end) {
+                return $localTime->subDay();
+            }
+        }
+
+        return $localTime;
     }
 
     private function calculateDistanceMeters(
