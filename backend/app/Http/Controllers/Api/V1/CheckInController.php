@@ -51,7 +51,7 @@ class CheckInController extends Controller
             'habit' => [
                 'id' => $habit->id,
                 'name' => $habit->name,
-                'current_streak' => $habit->current_streak,
+                'current_streak' => $habit->effectiveCurrentStreak($user->timezone ?: 'UTC'),
                 'longest_streak' => $habit->longest_streak,
             ],
         ], $result['idempotent_replay'] ? 200 : 201);

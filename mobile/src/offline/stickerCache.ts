@@ -43,6 +43,36 @@ export async function getCachedSticker(uuid: string): Promise<CachedSticker | nu
   return cache?.stickersByUuid[uuid] ?? null;
 }
 
+export async function markStickerTappedLocally(
+  uuid: string,
+  tappedAt: string,
+  newStreak?: number,
+): Promise<void> {
+  const cache = await getBootstrapCache();
+  if (!cache) return;
+
+  const sticker = cache.stickersByUuid[uuid];
+  if (!sticker) return;
+
+  const prevMs = sticker.last_tapped_at
+    ? new Date(sticker.last_tapped_at).getTime()
+    : 0;
+  const nextMs = new Date(tappedAt).getTime();
+
+  if (!Number.isFinite(prevMs) || nextMs >= prevMs) {
+    sticker.last_tapped_at = tappedAt;
+  }
+
+  if (sticker.habit && typeof newStreak === 'number') {
+    sticker.habit.current_streak = newStreak;
+    cache.habits = cache.habits.map((h) =>
+      h.id === sticker.habit?.id ? { ...h, current_streak: newStreak } : h,
+    );
+  }
+
+  await AsyncStorage.setItem(BOOTSTRAP_CACHE_KEY, JSON.stringify(cache));
+}
+
 export async function clearBootstrapCache(): Promise<void> {
   await AsyncStorage.removeItem(BOOTSTRAP_CACHE_KEY);
 }

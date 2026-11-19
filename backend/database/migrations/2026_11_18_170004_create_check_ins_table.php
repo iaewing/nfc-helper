@@ -29,6 +29,7 @@ return new class extends Migration
             $table->timestamps();
 
             $table->index(['user_id', 'habit_id', 'local_date']);
+            $table->index(['habit_id', 'status', 'tapped_at']);
             $table->index(['sticker_id', 'tapped_at']);
         });
     }

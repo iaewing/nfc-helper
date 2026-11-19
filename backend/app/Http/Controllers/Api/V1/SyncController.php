@@ -14,6 +14,7 @@ class SyncController extends Controller
     {
         /** @var User $user */
         $user = $request->user();
+        $timezone = $user->timezone ?: 'UTC';
 
         $stickers = $user->stickers()
             ->with('habit')
@@ -33,7 +34,7 @@ class SyncController extends Controller
                     'require_hardware_uid' => $sticker->habit->require_hardware_uid,
                     'cooldown_minutes' => $sticker->habit->cooldown_minutes,
                     'is_active' => $sticker->habit->is_active,
-                    'current_streak' => $sticker->habit->current_streak,
+                    'current_streak' => $sticker->habit->effectiveCurrentStreak($timezone),
                     'longest_streak' => $sticker->habit->longest_streak,
                     'last_checked_in_date' => $sticker->habit->last_checked_in_date?->toDateString(),
                 ],
@@ -51,7 +52,7 @@ class SyncController extends Controller
                 'verification_type' => $habit->verification_type->value,
                 'require_hardware_uid' => $habit->require_hardware_uid,
                 'cooldown_minutes' => $habit->cooldown_minutes,
-                'current_streak' => $habit->current_streak,
+                'current_streak' => $habit->effectiveCurrentStreak($timezone),
                 'longest_streak' => $habit->longest_streak,
                 'last_checked_in_date' => $habit->last_checked_in_date?->toDateString(),
             ]);

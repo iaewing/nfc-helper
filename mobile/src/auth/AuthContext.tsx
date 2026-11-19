@@ -94,7 +94,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const cachedUser = await getCachedUser();
         if (mounted) {
           setToken(storedToken);
-          if (cachedUser) setUser(cachedUser);
+          if (cachedUser) {
+            setUser(cachedUser);
+            setStatus('authenticated');
+          }
         }
 
         try {
@@ -109,19 +112,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           syncBootstrapCache().catch(() => {});
           flushCheckInQueue().catch(() => {});
         } catch (error) {
-          if (error instanceof ApiError && error.isNetworkError && cachedUser) {
-            // Preserve authenticated state offline so cached sticker taps still work
+          if (error instanceof ApiError && error.status === 401) {
+            await resetSession();
+            return;
+          }
+
+          if (cachedUser) {
+            // Preserve authenticated state on network errors, 5xx, or 429 when cached user exists
             if (mounted) {
               setStatus('authenticated');
             }
             return;
           }
 
-          await clearAuthToken();
-          await clearCachedUser();
           if (mounted) {
-            setToken(null);
-            setUser(null);
             setStatus('unauthenticated');
           }
         }

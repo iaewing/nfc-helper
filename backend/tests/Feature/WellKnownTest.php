@@ -17,6 +17,7 @@ class WellKnownTest extends TestCase
 
         $response->assertOk()
             ->assertHeader('Content-Type', 'application/json')
+            ->assertHeader('Cache-Control', 'max-age=3600, public')
             ->assertJson([
                 'applinks' => [
                     'details' => [
@@ -29,6 +30,22 @@ class WellKnownTest extends TestCase
                     ],
                 ],
             ]);
+    }
+
+    public function test_unconfigured_well_known_endpoints_disable_public_caching(): void
+    {
+        config([
+            'nfc.apple_team_id' => 'XXXXXXXXXX',
+            'nfc.android_sha256_fingerprints' => [],
+        ]);
+
+        $aasa = $this->get('/.well-known/apple-app-site-association');
+        $aasa->assertOk();
+        $this->assertStringContainsString('no-store', (string) $aasa->headers->get('Cache-Control'));
+
+        $assetLinks = $this->get('/.well-known/assetlinks.json');
+        $assetLinks->assertOk();
+        $this->assertStringContainsString('no-store', (string) $assetLinks->headers->get('Cache-Control'));
     }
 
     public function test_android_asset_links_returns_valid_json(): void

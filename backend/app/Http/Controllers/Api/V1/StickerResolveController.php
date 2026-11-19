@@ -76,11 +76,12 @@ class StickerResolveController extends Controller
         }
 
         $habit = $sticker->habit;
+        $timezone = $user->timezone ?: 'UTC';
         $eligibility = $this->checkInService->evaluateEligibility(
             $sticker,
             $habit,
             CarbonImmutable::now('UTC'),
-            $user->timezone ?: 'UTC',
+            $timezone,
         );
 
         return response()->json([
@@ -96,7 +97,7 @@ class StickerResolveController extends Controller
                 'verification_type' => $habit->verification_type->value,
                 'require_hardware_uid' => $habit->require_hardware_uid,
                 'cooldown_minutes' => $habit->cooldown_minutes,
-                'current_streak' => $habit->current_streak,
+                'current_streak' => $habit->effectiveCurrentStreak($timezone),
                 'longest_streak' => $habit->longest_streak,
             ],
             'eligibility' => $eligibility,
