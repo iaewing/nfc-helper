@@ -41,6 +41,30 @@ function RootNavigator() {
             presentation: 'card',
           }}
         />
+        <Stack.Screen
+          name="stickers/claim"
+          options={{
+            title: 'Claim Sticker',
+          }}
+        />
+        <Stack.Screen
+          name="stickers/[uuid]"
+          options={{
+            title: 'Sticker Settings',
+          }}
+        />
+        <Stack.Screen
+          name="habits/new"
+          options={{
+            title: 'New Habit',
+          }}
+        />
+        <Stack.Screen
+          name="habits/[id]"
+          options={{
+            title: 'Edit Habit',
+          }}
+        />
       </Stack>
     </>
   );

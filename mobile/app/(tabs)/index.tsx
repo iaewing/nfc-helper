@@ -8,8 +8,10 @@ import {
   Text,
   View,
 } from 'react-native';
-import type { HabitSummary } from '../../src/api/types';
+import { apiRequest } from '../../src/api/client';
+import type { HabitSummary, HabitsListResponse } from '../../src/api/types';
 import { useAuth } from '../../src/auth/AuthContext';
+import { formatVerificationLabel } from '../../src/components/HabitForm';
 import {
   flushCheckInQueue,
   usePendingCheckInCount,
@@ -37,8 +39,11 @@ export default function HabitsDashboardScreen() {
       setRefreshing(true);
     }
     try {
-      const fresh = await syncBootstrapCache();
-      setHabits(fresh.habits);
+      const [habitsRes] = await Promise.all([
+        apiRequest<HabitsListResponse>('/habits'),
+        syncBootstrapCache().catch(() => null),
+      ]);
+      setHabits(habitsRes.habits);
     } catch {
       // Keep cached habits visible when offline
     } finally {
@@ -70,9 +75,17 @@ export default function HabitsDashboardScreen() {
           <Text style={styles.greeting}>Hi, {user?.name ?? 'there'}</Text>
           <Text style={styles.timezone}>{user?.timezone ?? 'UTC'}</Text>
         </View>
-        <Pressable style={styles.logoutButton} onPress={handleLogout}>
-          <Text style={styles.logoutText}>Sign Out</Text>
-        </Pressable>
+        <View style={styles.headerActions}>
+          <Pressable
+            style={styles.newHabitButton}
+            onPress={() => router.push('/habits/new')}
+          >
+            <Text style={styles.newHabitText}>+ New</Text>
+          </Pressable>
+          <Pressable style={styles.logoutButton} onPress={handleLogout}>
+            <Text style={styles.logoutText}>Sign Out</Text>
+          </Pressable>
+        </View>
       </View>
 
       {pendingCount > 0 ? (
@@ -96,28 +109,40 @@ export default function HabitsDashboardScreen() {
         contentContainerStyle={styles.listContent}
         ListEmptyComponent={
           <View style={styles.emptyCard}>
-            <Text style={styles.emptyTitle}>No active habits yet</Text>
+            <Text style={styles.emptyTitle}>No habits yet</Text>
             <Text style={styles.emptyBody}>
-              Tap a Prove It NFC sticker or open the Stickers tab to claim and configure your first habit.
+              Create your first habit or open the Stickers tab to claim a Prove It NFC sticker.
             </Text>
+            <Pressable
+              style={styles.emptyCta}
+              onPress={() => router.push('/habits/new')}
+            >
+              <Text style={styles.emptyCtaText}>Create First Habit</Text>
+            </Pressable>
           </View>
         }
         renderItem={({ item }) => (
-          <View style={styles.habitCard}>
+          <Pressable
+            style={[styles.habitCard, item.is_active === false && styles.pausedCard]}
+            onPress={() => router.push(`/habits/${item.id}`)}
+          >
             <View style={styles.habitInfo}>
-              <Text style={styles.habitName}>{item.name}</Text>
+              <Text style={styles.habitName}>
+                {item.icon ? `${item.icon} ` : ''}
+                {item.name}
+              </Text>
               <Text style={styles.habitMeta}>
-                {item.verification_type === 'tap'
-                  ? 'Tap proof'
-                  : 'Tap + Live photo'}{' '}
-                · Cooldown {item.cooldown_minutes}m
+                {formatVerificationLabel(item.verification_type)}
+                {item.require_hardware_uid ? ' · Chip Check' : ''} · Cooldown{' '}
+                {item.cooldown_minutes}m
+                {item.is_active === false ? ' · Paused' : ''}
               </Text>
             </View>
             <View style={styles.streakBadge}>
               <Text style={styles.streakValue}>{item.current_streak}</Text>
               <Text style={styles.streakLabel}>streak</Text>
             </View>
-          </View>
+          </Pressable>
         )}
       />
     </View>
@@ -145,6 +170,21 @@ const styles = StyleSheet.create({
     color: '#94A3B8',
     fontSize: 13,
     marginTop: 2,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  newHabitButton: {
+    backgroundColor: '#38BDF8',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  newHabitText: {
+    color: '#082F49',
+    fontSize: 13,
+    fontWeight: '700',
   },
   logoutButton: {
     backgroundColor: '#1E293B',
@@ -196,6 +236,18 @@ const styles = StyleSheet.create({
     fontSize: 14,
     lineHeight: 20,
   },
+  emptyCta: {
+    backgroundColor: '#38BDF8',
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+    marginTop: 16,
+  },
+  emptyCtaText: {
+    color: '#082F49',
+    fontSize: 14,
+    fontWeight: '700',
+  },
   habitCard: {
     backgroundColor: '#1E293B',
     borderRadius: 14,
@@ -205,6 +257,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+  },
+  pausedCard: {
+    opacity: 0.65,
   },
   habitInfo: {
     flex: 1,
