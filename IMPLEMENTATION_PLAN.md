@@ -8,8 +8,8 @@
 | :--- | :--- | :--- |
 | **Phase 1** | Backend Foundation & Universal Link Plumbing | Completed |
 | **Phase 2** | Expo Bootstrap, Deep Link Routing & Offline Queue | Completed |
-| **Phase 3** | Foreground NFC Claiming, Habit CRUD & Verification UI | Next Up |
-| **Phase 4** | Accountability Engine, Push Notifications & Webhooks | Planned |
+| **Phase 3** | Foreground NFC Claiming, Habit CRUD & Verification UI | Completed |
+| **Phase 4** | Accountability Engine, Push Notifications & Webhooks | Next Up |
 
 ---
 
@@ -59,43 +59,43 @@
 
 ---
 
-## Phase 3: Foreground NFC Claiming, Habit CRUD & Verification UI (Next Up)
+## Phase 3: Foreground NFC Claiming, Habit CRUD & Verification UI (Completed)
 
 ### 3.1 Backend: Habit CRUD & Sticker Claiming Endpoints
-- [ ] **Habit Management API (`backend/app/Http/Controllers/Api/V1/HabitController.php`):**
-  - [ ] `GET /api/v1/habits` — list user's habits (active and paused) with attached stickers and effective streaks
-  - [ ] `POST /api/v1/habits` — create a habit (`name`, `description`, `icon`, `verification_type`, `require_hardware_uid`, `schedule_type`, `schedule_days`, `window_start`, `window_end`, `cooldown_minutes`, optional `geofence_lat`/`geofence_lng`/`geofence_radius_m`)
-  - [ ] `GET /api/v1/habits/{habit}` — inspect habit details and recent check-ins
-  - [ ] `PATCH /api/v1/habits/{habit}` — update habit rules, schedule, or active state (`is_active`)
-  - [ ] `DELETE /api/v1/habits/{habit}` — soft-delete habit and unassign its stickers (`habit_id = null`)
-- [ ] **Sticker Claiming & Assignment API (`backend/app/Http/Controllers/Api/V1/StickerController.php`):**
-  - [ ] `POST /api/v1/stickers/claim` — validate `uuid` + 7-byte hex `hardware_uid` (`Sticker::normalizeHardwareUid`), enforce uniqueness of `hardware_uid`, transition sticker from `unclaimed` -> `claimed`, bind `user_id`, generate `webhook_token`, and optionally assign `habit_id` and `label`
-  - [ ] `PATCH /api/v1/stickers/{uuid}` — update sticker `label`, reassign `habit_id`, or rotate `webhook_token`
-  - [ ] `DELETE /api/v1/stickers/{uuid}/claim` (or unclaim/disable endpoint) — allow users to unbind or disable a lost sticker
-- [ ] **Backend Feature Tests:**
-  - [ ] Add `backend/tests/Feature/StickerClaimTest.php` covering valid claiming, duplicate `hardware_uid` rejection, already-claimed rejection, and habit assignment
-  - [ ] Add `backend/tests/Feature/HabitCrudTest.php` covering schedule validation, geofence validation, and authorization policies
+- [x] **Habit Management API (`backend/app/Http/Controllers/Api/V1/HabitController.php`):**
+  - [x] `GET /api/v1/habits` — list user's habits (active and paused) with attached stickers and effective streaks
+  - [x] `POST /api/v1/habits` — create a habit (`name`, `description`, `icon`, `verification_type`, `require_hardware_uid`, `schedule_type`, `schedule_days`, `window_start`, `window_end`, `cooldown_minutes`, optional `geofence_lat`/`geofence_lng`/`geofence_radius_m`)
+  - [x] `GET /api/v1/habits/{habit}` — inspect habit details and recent check-ins
+  - [x] `PATCH /api/v1/habits/{habit}` — update habit rules, schedule, or active state (`is_active`)
+  - [x] `DELETE /api/v1/habits/{habit}` — soft-delete habit and unassign its stickers (`habit_id = null`)
+- [x] **Sticker Claiming & Assignment API (`backend/app/Http/Controllers/Api/V1/StickerController.php`):**
+  - [x] `POST /api/v1/stickers/claim` — validate `uuid` + 7-byte hex `hardware_uid` (`Sticker::normalizeHardwareUid`), enforce uniqueness of `hardware_uid`, transition sticker from `unclaimed` -> `claimed`, bind `user_id`, generate `webhook_token`, and optionally assign `habit_id` and `label`
+  - [x] `PATCH /api/v1/stickers/{uuid}` — update sticker `label`, reassign `habit_id`, or rotate `webhook_token`
+  - [x] `DELETE /api/v1/stickers/{uuid}/claim` (or unclaim/disable endpoint) — allow users to unbind or disable a lost sticker
+- [x] **Backend Feature Tests:**
+  - [x] Add `backend/tests/Feature/StickerClaimTest.php` covering valid claiming, duplicate `hardware_uid` rejection, already-claimed rejection, and habit assignment
+  - [x] Add `backend/tests/Feature/HabitCrudTest.php` covering schedule validation, geofence validation, and authorization policies
 
 ### 3.2 Mobile: Foreground NFC Hook (`react-native-nfc-manager`)
-- [ ] Create `mobile/src/nfc/useNfcScanner.ts` to encapsulate cross-platform foreground NFC scanning:
-  - [ ] Check hardware support (`NfcManager.isSupported()`) and enabled status (`NfcManager.isEnabled()`)
-  - [ ] Request `NfcTech.Ndef` session with clean iOS alert message (`alertMessage`) and guaranteed `cancelTechnologyRequest()` cleanup in `finally`
-  - [ ] Parse the NDEF URI record to extract the sticker `uuid` (`/t/{uuid}`)
-  - [ ] Extract and normalize `tag.id` into uppercase hex `hardware_uid` (validating 7-byte NTAG213/215 format)
-  - [ ] Expose clear error types (`NFC_UNSUPPORTED`, `NFC_DISABLED`, `USER_CANCELLED`, `INVALID_TAG_PAYLOAD`, `MISSING_HARDWARE_UID`)
+- [x] Create `mobile/src/nfc/useNfcScanner.ts` to encapsulate cross-platform foreground NFC scanning:
+  - [x] Check hardware support (`NfcManager.isSupported()`) and enabled status (`NfcManager.isEnabled()`)
+  - [x] Request `NfcTech.Ndef` session with clean iOS alert message (`alertMessage`) and guaranteed `cancelTechnologyRequest()` cleanup in `finally`
+  - [x] Parse the NDEF URI record to extract the sticker `uuid` (`/t/{uuid}`)
+  - [x] Extract and normalize `tag.id` into uppercase hex `hardware_uid` (validating 7-byte NTAG213/215 format)
+  - [x] Expose clear error types (`NFC_UNSUPPORTED`, `NFC_DISABLED`, `USER_CANCELLED`, `INVALID_TAG_PAYLOAD`, `MISSING_HARDWARE_UID`)
 
 ### 3.3 Mobile: Claiming, Habit Configuration & Verification Flows
-- [ ] **Sticker Claiming Screen (`mobile/app/stickers/claim.tsx`):**
-  - [ ] Support launching directly from the Stickers tab ("Claim New Sticker") or from `/t/[uuid]` when tapping an `unclaimed` sticker
-  - [ ] Guide the user through a foreground NFC scan to read `uuid` + `hardware_uid`
-  - [ ] Allow setting a sticker label (e.g., "Coffee Maker", "Gym Bag") and picking an existing habit or creating a new habit inline
-  - [ ] Submit to `POST /api/v1/stickers/claim` and refresh the local bootstrap cache
-- [ ] **Habit Create / Edit Screens (`mobile/app/habits/new.tsx`, `mobile/app/habits/[id].tsx`):**
-  - [ ] Form controls for name, icon, verification mode (`tap`, `tap_photo`, `tap_location`, `tap_photo_location`), high-security hardware UID toggle (`require_hardware_uid`), schedule (`daily` vs `custom_days`), time window, cooldown minutes, and optional geofence capture ("Use Current Location")
-- [ ] **Inline Verification Prompts on `/t/[uuid]` (`mobile/app/t/[uuid].tsx`):**
-  - [ ] **Foreground Hardware UID Step (`needs_hardware_uid`):** Trigger `useNfcScanner` inline to read `hardware_uid` from the physical tag before submitting `POST /api/v1/check-ins` (`source: 'foreground_scan'`)
-  - [ ] **Live Photo Proof Step (`needs_photo`):** Embed live `CameraView` from `expo-camera` (no photo library picker), compress captured image, and upload via `multipart/form-data` to `POST /api/v1/check-ins`
-  - [ ] **Location Geofence Step (`tap_location` / `tap_photo_location`):** Request foreground location permission via `expo-location`, capture current coordinates, and include `latitude` and `longitude` in the check-in payload
+- [x] **Sticker Claiming Screen (`mobile/app/stickers/claim.tsx`):**
+  - [x] Support launching directly from the Stickers tab ("Claim New Sticker") or from `/t/[uuid]` when tapping an `unclaimed` sticker
+  - [x] Guide the user through a foreground NFC scan to read `uuid` + `hardware_uid`
+  - [x] Allow setting a sticker label (e.g., "Coffee Maker", "Gym Bag") and picking an existing habit or creating a new habit inline
+  - [x] Submit to `POST /api/v1/stickers/claim` and refresh the local bootstrap cache
+- [x] **Habit Create / Edit Screens (`mobile/app/habits/new.tsx`, `mobile/app/habits/[id].tsx`):**
+  - [x] Form controls for name, icon, verification mode (`tap`, `tap_photo`, `tap_location`, `tap_photo_location`), high-security hardware UID toggle (`require_hardware_uid`), schedule (`daily` vs `custom_days`), time window, cooldown minutes, and optional geofence capture ("Use Current Location")
+- [x] **Inline Verification Prompts on `/t/[uuid]` (`mobile/app/t/[uuid].tsx`):**
+  - [x] **Foreground Hardware UID Step (`needs_hardware_uid`):** Trigger `useNfcScanner` inline to read `hardware_uid` from the physical tag before submitting `POST /api/v1/check-ins` (`source: 'foreground_nfc'`)
+  - [x] **Live Photo Proof Step (`needs_photo`):** Embed live `CameraView` from `expo-camera` (no photo library picker), compress captured image, and upload via `multipart/form-data` to `POST /api/v1/check-ins`
+  - [x] **Location Geofence Step (`tap_location` / `tap_photo_location`):** Request foreground location permission via `expo-location`, capture current coordinates, and include `latitude` and `longitude` in the check-in payload
 
 ---
 

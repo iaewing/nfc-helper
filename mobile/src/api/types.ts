@@ -11,7 +11,13 @@ export interface AuthResponse {
   user: User;
 }
 
-export type VerificationType = 'tap' | 'tap_photo' | 'tap_photo_location';
+export type VerificationType =
+  | 'tap'
+  | 'tap_photo'
+  | 'tap_location'
+  | 'tap_photo_location';
+
+export type ScheduleType = 'daily' | 'custom_days';
 
 export interface HabitSummary {
   id: number;
@@ -25,6 +31,108 @@ export interface HabitSummary {
   current_streak: number;
   longest_streak: number;
   last_checked_in_date?: string | null;
+}
+
+export interface HabitStickerRef {
+  uuid: string;
+  label: string | null;
+  last_tapped_at: string | null;
+}
+
+export interface Habit extends HabitSummary {
+  description: string | null;
+  icon: string | null;
+  schedule_type: ScheduleType;
+  schedule_days: number[] | null;
+  window_start: string | null;
+  window_end: string | null;
+  geofence_lat: number | null;
+  geofence_lng: number | null;
+  geofence_radius_m: number | null;
+  is_active: boolean;
+  last_checked_in_date: string | null;
+  stickers: HabitStickerRef[];
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface RecentCheckIn {
+  id: number;
+  client_event_id: string;
+  source: CheckInSource;
+  hardware_uid_verified: boolean;
+  tapped_at: string;
+  local_date: string;
+  is_offline_sync: boolean;
+  has_photo: boolean;
+  distance_meters: number | null;
+  status: string;
+}
+
+export interface HabitsListResponse {
+  habits: Habit[];
+}
+
+export interface HabitMutationResponse {
+  habit: Habit;
+}
+
+export interface HabitDetailResponse {
+  habit: Habit;
+  recent_check_ins: RecentCheckIn[];
+}
+
+export interface HabitPayload {
+  name: string;
+  description?: string | null;
+  icon?: string | null;
+  verification_type: VerificationType;
+  require_hardware_uid: boolean;
+  schedule_type: ScheduleType;
+  schedule_days?: number[] | null;
+  window_start?: string | null;
+  window_end?: string | null;
+  cooldown_minutes: number;
+  geofence_lat?: number | null;
+  geofence_lng?: number | null;
+  geofence_radius_m?: number | null;
+  is_active?: boolean;
+}
+
+export type HabitUpdatePayload = Partial<HabitPayload>;
+
+export interface StickerDetail {
+  uuid: string;
+  hardware_uid: string | null;
+  label: string | null;
+  status: 'unclaimed' | 'claimed' | 'disabled';
+  habit_id: number | null;
+  claimed_at: string | null;
+  last_tapped_at: string | null;
+  habit: HabitSummary | null;
+}
+
+export interface ClaimStickerPayload {
+  uuid: string;
+  hardware_uid: string;
+  label?: string | null;
+  habit_id?: number | null;
+}
+
+export interface UpdateStickerPayload {
+  label?: string | null;
+  habit_id?: number | null;
+  rotate_webhook_token?: boolean;
+}
+
+export interface StickerResponse {
+  sticker: StickerDetail;
+  webhook_token_rotated?: boolean;
+}
+
+export interface UnclaimStickerResponse {
+  status: 'unclaimed' | 'disabled';
+  message: string;
 }
 
 export interface CachedSticker {

@@ -145,8 +145,9 @@ nfc-helper/
 | `GET` | `/api/v1/sync/bootstrap` | Implemented | Pull claimed stickers & active habits for offline cache |
 | `GET` | `/api/v1/stickers/{uuid}/resolve` | Implemented | Resolve sticker state, habit requirements & check-in eligibility |
 | `POST` | `/api/v1/check-ins` | Implemented | Record idempotent check-in (JSON or `multipart/form-data` with photo) |
-| `POST` | `/api/v1/stickers/claim` | Phase 3 | Claim an unclaimed sticker with `uuid` + 7-byte `hardware_uid` |
-| `PATCH` | `/api/v1/stickers/{uuid}` | Phase 3 | Update sticker label or assigned `habit_id` |
-| `GET/POST/PATCH/DELETE` | `/api/v1/habits` | Phase 3 | Full CRUD for habits, schedules, and verification rules |
+| `POST` | `/api/v1/stickers/claim` | Implemented | Claim an unclaimed sticker with `uuid` + 7-byte `hardware_uid` |
+| `GET/PATCH` | `/api/v1/stickers/{uuid}` | Implemented | Inspect or update owned sticker label, assigned `habit_id`, or rotate webhook token |
+| `DELETE` | `/api/v1/stickers/{uuid}/claim` | Implemented | Unclaim or permanently disable a lost sticker |
+| `GET/POST/PATCH/DELETE` | `/api/v1/habits` | Implemented | Full CRUD for habits, schedules, and verification rules |
 | `GET/POST/PATCH/DELETE` | `/api/v1/habits/{habit}/notifications` | Phase 4 | Configure reminder and missed-window push schedules |
 | `POST` | `/api/v1/webhooks/nfc/{webhook_token}` | Phase 4 | Headless check-in trigger for iOS Shortcuts / Android Tasker |
